@@ -1,0 +1,123 @@
+version: 2.1
+orbs:
+  figedi: figedi/build-helpers@1.0.0
+
+workflows:
+  ###
+  # CI Workflow
+  # - Bumps version, builds docker image
+  # - Runs Tests against all APIs
+  # - Lints
+  ci:
+    jobs:
+      - figedi/checkout_bump_and_build:
+          name: checkout_bump_and_build
+          context: GCP
+
+      - figedi/lint:
+          name: lint
+          context: GCP
+          requires:
+            - checkout_bump_and_build
+
+      - figedi/specs:
+          name: specs
+          context: GCP
+          requires:
+            - checkout_bump_and_build
+
+      - figedi/features:
+          name: features
+          context: GCP
+          requires:
+            - checkout_bump_and_build
+
+      - figedi/push_to_github:
+          name: push_to_github
+          context: GCP
+          filters:
+            branches:
+              only:
+                - master
+                - /release\/.*/
+          requires:
+            - features
+            - specs
+            - lint
+
+      - figedi/push_to_docker:
+          name: push_to_docker
+          context: GCP
+          filters:
+            branches:
+              only:
+                - master
+                - /release\/.*/
+          requires:
+            - features
+            - specs
+            - lint
+      ###
+      # CD Workflow
+      # - Only runs on non-master branches
+      # - Deploys the pushed image to dev
+      # - Deploys the pushed image to prod/stg after approval
+      ###
+      - figedi/gke_deploy:
+          name: gke_deploy_dev
+          serviceName: passenger
+          targetCluster: ${CLUSTER_DEV_ENV}
+          targetNamespace: dev
+          context: GCP
+          filters:
+            branches:
+              only:
+                - master
+          requires:
+            - push_to_github
+            - push_to_docker
+
+      - figedi/trigger_deploy:
+          name: approve_demo_deployment
+          type: approval
+          requires:
+            - gke_deploy_dev
+
+      - figedi/gke_deploy:
+          name: gke_deploy_demo
+          serviceName: passenger
+          targetCluster: ${CLUSTER_DEMO_ENV}
+          targetNamespace: demo
+          context: GCP
+          requires:
+            - approve_demo_deployment
+
+      - figedi/trigger_deploy:
+          name: approve_staging_deployment
+          type: approval
+          requires:
+            - gke_deploy_dev
+
+      - figedi/gke_deploy:
+          name: gke_deploy_staging
+          serviceName: passenger
+          targetCluster: ${CLUSTER_DEV_ENV}
+          targetNamespace: stg
+          context: GCP
+          requires:
+            - approve_staging_deployment
+
+      - figedi/trigger_deploy:
+          name: approve_production_deployment
+          type: approval
+          requires:
+            - gke_deploy_staging
+
+      - figedi/gke_deploy:
+          name: gke_deploy_production
+          serviceName: passenger
+          targetCluster: ${CLUSTER_PROD_ENV}
+          targetNamespace: prod
+          context: GCP
+          requires:
+            - approve_production_deployment
